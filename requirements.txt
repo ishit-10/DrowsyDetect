@@ -1,4 +1,6 @@
 streamlit
 numpy>=1.26
 opencv-python-headless>=4.9.0
+scipy
 pillow
+pygame
