@@ -10,10 +10,17 @@ class SimpleDrowsinessDetector:
         # Initialize OpenCV face detector
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
-        
-        # Initialize pygame for sound
-        pygame.mixer.init()
-        self.create_alert_sound()
+
+        # Initialize pygame for sound (with fallback for headless environments like Streamlit Cloud)
+        self.audio_available = False
+        try:
+            pygame.mixer.init()
+            self.create_alert_sound()
+            self.audio_available = True
+        except pygame.error:
+            # Audio not available (e.g., on Streamlit Cloud)
+            print("⚠️ Audio not available - running in silent mode")
+            self.alert_sound = None
         
         # Detection parameters (assuming ~30 FPS)
         self.eye_closed_counter = 0
@@ -56,9 +63,10 @@ class SimpleDrowsinessDetector:
         if not self.alert_active:
             print("🚨 ALERT STARTED - Drowsiness detected!")
             self.alert_active = True
-            self.alert_thread = threading.Thread(target=self._play_alert_loop)
-            self.alert_thread.daemon = True
-            self.alert_thread.start()
+            if self.audio_available:
+                self.alert_thread = threading.Thread(target=self._play_alert_loop)
+                self.alert_thread.daemon = True
+                self.alert_thread.start()
             
     def _play_alert_loop(self):
         """Play alert sound in a loop"""
@@ -75,7 +83,8 @@ class SimpleDrowsinessDetector:
         if self.alert_active:
             print("🔇 ALERT STOPPED - Driver is alert now")
         self.alert_active = False
-        pygame.mixer.stop()
+        if self.audio_available:
+            pygame.mixer.stop()
         
     def detect_eyes(self, face_roi):
         """Detect eyes in face region with improved sensitivity"""
@@ -249,3 +258,10 @@ class SimpleDrowsinessDetector:
         self.is_drowsy = False
         self.stop_alert()
         print("System reset - All counters cleared")
+
+
+# Initialize pygame at module level for headless support
+try:
+    pygame.init()
+except pygame.error:
+    pass  # Ignore initialization errors in headless environments
