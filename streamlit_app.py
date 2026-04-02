@@ -2,7 +2,6 @@ import streamlit as st
 import cv2
 import numpy as np
 from simple_detector import SimpleDrowsinessDetector
-import av
 
 # Page configuration
 st.set_page_config(
@@ -94,6 +93,16 @@ def main():
                 st.session_state.detector.reset()
                 st.success("Detector reset!")
 
+    # Initialize session state
+    if 'detector' not in st.session_state:
+        st.session_state.detector = get_detector()
+
+    if 'running' not in st.session_state:
+        st.session_state.running = False
+
+    if 'frame_count' not in st.session_state:
+        st.session_state.frame_count = 0
+
     # Main content area
     col1, col2 = st.columns([2, 1])
 
@@ -113,110 +122,99 @@ def main():
         st.header("ℹ️ Detection Info")
         info_placeholder = st.empty()
 
-    # Initialize session state
-    if 'detector' not in st.session_state:
-        st.session_state.detector = get_detector()
+    # Camera capture using st.camera_input
+    camera_frame = st.camera_input("Camera")
 
-    if 'running' not in st.session_state:
-        st.session_state.running = True
-
-    # Control buttons
+    # Control buttons - placed after camera input for better UX
     st.markdown("---")
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
         if st.button("▶️ Start Detection"):
             st.session_state.running = True
+            st.rerun()
     with col_btn2:
         if st.button("⏹️ Stop Detection"):
             st.session_state.running = False
             st.session_state.detector.stop_alert()
+            st.rerun()
 
-    # Use st-webrtc for live camera streaming
-    from streamlit_webrtc import webrtc_streamer, WebRtcMode
-
-    # Main detection loop with WebRTC
-    webrtc_ctx = webrtc_streamer(
-        key="drowsy-detection",
-        mode=WebRtcMode.SENDRECV,
-        media_stream_constraints={"video": True},
-        async_processing=True,
-    )
-
-    if webrtc_ctx.video_receiver is None:
-        st.warning("⏳ Waiting for camera access... Please allow camera permissions.")
+    # Show status based on running state
+    if not st.session_state.running:
+        video_placeholder.info("Click 'Start Detection' to begin monitoring")
+        status_placeholder.markdown(
+            '<div class="status-box safe-status">⏸️ Paused</div>',
+            unsafe_allow_html=True
+        )
         st.stop()
 
-    # Process frames from WebRTC
-    while st.session_state.running and webrtc_ctx.video_receiver:
-        try:
-            frame = webrtc_ctx.video_receiver.get_frame(timeout=5)
-        except Exception:
-            st.warning("⚠️ Could not read from camera.")
-            break
+    if camera_frame is None:
+        video_placeholder.warning("📷 Please allow camera access to start detection")
+        st.stop()
 
-        # Convert to OpenCV format
-        frame = frame.to_ndarray(format="bgr24")
+    # Read image from camera
+    image = np.array(camera_frame)
 
-        # Flip frame for mirror effect
-        frame = cv2.flip(frame, 1)
+    # Convert RGB to BGR for OpenCV
+    frame = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-        # Process frame
-        processed_frame, drowsy_detected, eye_counter, mouth_counter = process_frame(
-            frame, st.session_state.detector
+    # Flip frame for mirror effect
+    frame = cv2.flip(frame, 1)
+
+    # Process frame
+    processed_frame, drowsy_detected, eye_counter, mouth_counter = process_frame(
+        frame, st.session_state.detector
+    )
+
+    st.session_state.frame_count += 1
+
+    # Convert BGR to RGB for Streamlit
+    processed_frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+
+    # Display video
+    video_placeholder.image(processed_frame_rgb, width=640)
+
+    # Update status display
+    eye_seconds = eye_counter / 30.0
+    mouth_seconds = mouth_counter / 30.0
+
+    # Status box
+    if drowsy_detected:
+        status_placeholder.markdown(
+            '<div class="status-box alert-status">🚨 DROWSINESS DETECTED!</div>',
+            unsafe_allow_html=True
         )
-
-        # Convert BGR to RGB for Streamlit
-        processed_frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-
-        # Display video
-        video_placeholder.image(processed_frame_rgb, width=640)
-
-        # Update status display
-        eye_seconds = eye_counter / 30.0
-        mouth_seconds = mouth_counter / 30.0
-
-        # Status box
-        if drowsy_detected:
-            status_placeholder.markdown(
-                '<div class="status-box alert-status">🚨 DROWSINESS DETECTED!</div>',
-                unsafe_allow_html=True
-            )
-            alert_placeholder.warning("⚠️ Alert is ACTIVE")
-        elif eye_counter > 10 or mouth_counter > 5:
-            status_placeholder.markdown(
-                '<div class="status-box warning-status">⚠️ Warning - Possible Fatigue</div>',
-                unsafe_allow_html=True
-            )
-            alert_placeholder.info("Monitoring...")
-        else:
-            status_placeholder.markdown(
-                '<div class="status-box safe-status">✅ Driver is Alert</div>',
-                unsafe_allow_html=True
-            )
-            alert_placeholder.success("No alert active")
-
-        # Metrics
-        eyes_placeholder.metric(
-            "Eyes Closed Duration",
-            f"{eye_seconds:.1f}s",
-            delta=f"Threshold: 2.0s" if eye_counter > 10 else None
+        alert_placeholder.warning("⚠️ Alert is ACTIVE")
+    elif eye_counter > 10 or mouth_counter > 5:
+        status_placeholder.markdown(
+            '<div class="status-box warning-status">⚠️ Warning - Possible Fatigue</div>',
+            unsafe_allow_html=True
         )
-        mouth_placeholder.metric(
-            "Yawning Duration",
-            f"{mouth_seconds:.1f}s",
-            delta=f"Threshold: 0.5s" if mouth_counter > 5 else None
+        alert_placeholder.info("Monitoring...")
+    else:
+        status_placeholder.markdown(
+            '<div class="status-box safe-status">✅ Driver is Alert</div>',
+            unsafe_allow_html=True
         )
+        alert_placeholder.success("No alert active")
 
-        # Detection info
-        info_placeholder.markdown(f"""
-        - **Frame:** {st.session_state.detector.frame_counter}
-        - **Eye Status:** {'Closed' if eye_counter > 0 else 'Open'}
-        - **Mouth Status:** {'Open (Yawning)' if mouth_counter > 0 else 'Closed'}
-        """)
+    # Metrics
+    eyes_placeholder.metric(
+        "Eyes Closed Duration",
+        f"{eye_seconds:.1f}s",
+        delta=f"Threshold: 2.0s" if eye_counter > 10 else None
+    )
+    mouth_placeholder.metric(
+        "Yawning Duration",
+        f"{mouth_seconds:.1f}s",
+        delta=f"Threshold: 0.5s" if mouth_counter > 5 else None
+    )
 
-    # Cleanup
-    st.session_state.detector.stop_alert()
-    st.info("Detection stopped. Close and reopen the app to restart.")
+    # Detection info
+    info_placeholder.markdown(f"""
+    - **Frame:** {st.session_state.frame_count}
+    - **Eye Status:** {'Closed' if eye_counter > 0 else 'Open'}
+    - **Mouth Status:** {'Open (Yawning)' if mouth_counter > 0 else 'Closed'}
+    """)
 
 
 if __name__ == "__main__":

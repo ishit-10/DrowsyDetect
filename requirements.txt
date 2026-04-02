@@ -19,7 +19,3 @@ Pillow>=10.1.0
 
 # Streamlit (required for Streamlit Cloud)
 streamlit>=1.28.0
-
-# WebRTC for live camera streaming in browser
-streamlit-webrtc>=0.47.0
-av>=10.0.0
