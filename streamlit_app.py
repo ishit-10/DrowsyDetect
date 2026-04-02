@@ -1,11 +1,8 @@
 import streamlit as st
 import cv2
 import numpy as np
-import pygame
-import time
-import threading
-from scipy.spatial import distance as dist
 from simple_detector import SimpleDrowsinessDetector
+import av
 
 # Page configuration
 st.set_page_config(
@@ -56,28 +53,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-class StreamlitDetector:
-    """Streamlit-compatible detector wrapper"""
+# Initialize detector once
+@st.cache_resource
+def get_detector():
+    return SimpleDrowsinessDetector()
 
-    def __init__(self):
-        self.detector = SimpleDrowsinessDetector()
-        self.frame_counter = 0
-        self.last_alert_time = 0
 
-    def process_frame(self, frame):
-        """Process a single frame and return results"""
-        processed_frame, drowsy_detected = self.detector.detect_drowsiness(frame)
-        self.frame_counter += 1
-
-        return processed_frame, drowsy_detected, self.detector.eye_closed_counter, self.detector.mouth_open_counter
-
-    def reset(self):
-        """Reset detector state"""
-        self.detector.reset()
-
-    def stop(self):
-        """Stop alert sounds"""
-        self.detector.stop_alert()
+def process_frame(frame, detector):
+    """Process a single frame and return results"""
+    processed_frame, drowsy_detected = detector.detect_drowsiness(frame)
+    return processed_frame, drowsy_detected, detector.eye_closed_counter, detector.mouth_open_counter
 
 
 def main():
@@ -130,7 +115,7 @@ def main():
 
     # Initialize session state
     if 'detector' not in st.session_state:
-        st.session_state.detector = StreamlitDetector()
+        st.session_state.detector = get_detector()
 
     if 'running' not in st.session_state:
         st.session_state.running = True
@@ -144,30 +129,41 @@ def main():
     with col_btn2:
         if st.button("⏹️ Stop Detection"):
             st.session_state.running = False
-            st.session_state.detector.stop()
+            st.session_state.detector.stop_alert()
 
-    # Camera capture
-    cap = cv2.VideoCapture(0)
+    # Use st-webrtc for live camera streaming
+    from streamlit_webrtc import webrtc_streamer, WebRtcMode
 
-    if not cap.isOpened():
-        st.error("❌ Could not access camera. Please check your camera connection.")
+    # Main detection loop with WebRTC
+    webrtc_ctx = webrtc_streamer(
+        key="drowsy-detection",
+        mode=WebRtcMode.SENDRECV,
+        media_stream_constraints={"video": True},
+        async_processing=True,
+    )
+
+    if webrtc_ctx.video_receiver is None:
+        st.warning("⏳ Waiting for camera access... Please allow camera permissions.")
         st.stop()
 
-    st.success("✅ Camera initialized. Starting detection...")
-
-    # Main detection loop
-    while st.session_state.running:
-        ret, frame = cap.read()
-
-        if not ret:
+    # Process frames from WebRTC
+    while st.session_state.running and webrtc_ctx.video_receiver:
+        try:
+            frame = webrtc_ctx.video_receiver.get_frame(timeout=5)
+        except Exception:
             st.warning("⚠️ Could not read from camera.")
             break
+
+        # Convert to OpenCV format
+        frame = frame.to_ndarray(format="bgr24")
 
         # Flip frame for mirror effect
         frame = cv2.flip(frame, 1)
 
         # Process frame
-        processed_frame, drowsy_detected, eye_counter, mouth_counter = st.session_state.detector.process_frame(frame)
+        processed_frame, drowsy_detected, eye_counter, mouth_counter = process_frame(
+            frame, st.session_state.detector
+        )
 
         # Convert BGR to RGB for Streamlit
         processed_frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
@@ -218,12 +214,8 @@ def main():
         - **Mouth Status:** {'Open (Yawning)' if mouth_counter > 0 else 'Closed'}
         """)
 
-        # Small delay to prevent CPU overload
-        time.sleep(0.03)
-
     # Cleanup
-    cap.release()
-    st.session_state.detector.stop()
+    st.session_state.detector.stop_alert()
     st.info("Detection stopped. Close and reopen the app to restart.")
 
 
