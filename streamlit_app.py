@@ -1,7 +1,9 @@
 import streamlit as st
 import cv2
 import numpy as np
+import av
 from simple_detector import SimpleDrowsinessDetector
+from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
 # Page configuration
 st.set_page_config(
@@ -42,26 +44,52 @@ st.markdown("""
         border: 3px solid #FF9800;
         color: #E65100;
     }
-    .metric-card {
-        background-color: #f5f5f5;
-        padding: 1rem;
-        border-radius: 8px;
-        text-align: center;
-    }
     </style>
 """, unsafe_allow_html=True)
 
 
-# Initialize detector once
+# Shared state for detector metrics
 @st.cache_resource
-def get_detector():
-    return SimpleDrowsinessDetector()
+def get_shared_state():
+    return {
+        "eye_closed_counter": 0,
+        "mouth_open_counter": 0,
+        "drowsy_detected": False,
+        "alert_active": False,
+        "frame_count": 0
+    }
 
 
-def process_frame(frame, detector):
-    """Process a single frame and return results"""
-    processed_frame, drowsy_detected = detector.detect_drowsiness(frame)
-    return processed_frame, drowsy_detected, detector.eye_closed_counter, detector.mouth_open_counter
+class DrowsinessVideoProcessor:
+    """Video processor that runs drowsiness detection on each frame"""
+
+    def __init__(self, shared_state):
+        self.detector = SimpleDrowsinessDetector()
+        self.shared_state = shared_state
+
+    def recv(self, frame):
+        """Process incoming video frame"""
+        # Convert AVFrame to numpy array
+        img = frame.to_ndarray(format="bgr24")
+
+        # Flip frame for mirror effect
+        img = cv2.flip(img, 1)
+
+        # Run drowsiness detection
+        processed_frame, drowsy_detected = self.detector.detect_drowsiness(img)
+
+        # Update shared state for UI
+        self.shared_state["eye_closed_counter"] = self.detector.eye_closed_counter
+        self.shared_state["mouth_open_counter"] = self.detector.mouth_open_counter
+        self.shared_state["drowsy_detected"] = drowsy_detected
+        self.shared_state["alert_active"] = self.detector.alert_active
+        self.shared_state["frame_count"] = self.shared_state.get("frame_count", 0) + 1
+
+        # Convert back to RGB for WebRTC
+        processed_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+
+        # Convert numpy array back to AVFrame
+        return av.VideoFrame.from_ndarray(processed_rgb, format="rgb24")
 
 
 def main():
@@ -88,27 +116,56 @@ def main():
         """)
 
         st.markdown("---")
+        # Reset button
         if st.button("🔄 Reset Detector"):
-            if 'detector' in st.session_state:
-                st.session_state.detector.reset()
+            if 'processor' in st.session_state:
+                st.session_state.processor.detector.reset()
                 st.success("Detector reset!")
+                st.rerun()
 
-    # Initialize session state
-    if 'detector' not in st.session_state:
-        st.session_state.detector = get_detector()
+    # Initialize shared state
+    shared_state = get_shared_state()
 
-    if 'running' not in st.session_state:
-        st.session_state.running = False
+    # Initialize processor
+    if 'processor' not in st.session_state:
+        st.session_state.processor = None
 
-    if 'frame_count' not in st.session_state:
-        st.session_state.frame_count = 0
+    if 'streaming' not in st.session_state:
+        st.session_state.streaming = False
+
+    # Control buttons
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        if st.button("▶️ Start Detection"):
+            st.session_state.streaming = True
+            st.session_state.processor = DrowsinessVideoProcessor(shared_state)
+            st.rerun()
+    with col_btn2:
+        if st.button("⏹️ Stop Detection"):
+            st.session_state.streaming = False
+            if st.session_state.processor:
+                st.session_state.processor.detector.stop_alert()
+            st.rerun()
 
     # Main content area
     col1, col2 = st.columns([2, 1])
 
     with col1:
         st.header("📹 Live Feed")
-        video_placeholder = st.empty()
+
+        if not st.session_state.streaming:
+            st.info("Click 'Start Detection' to begin monitoring")
+            video_placeholder = st.empty()
+            video_placeholder.image(np.zeros((480, 640, 3), dtype=np.uint8), width=640)
+        else:
+            # WebRTC streamer with video processor
+            webrtc_streamer(
+                key="drowsy-detection",
+                mode=WebRtcMode.SENDRECV,
+                media_stream_constraints={"video": True},
+                video_processor_factory=lambda: st.session_state.processor,
+                async_processing=True,
+            )
 
     with col2:
         st.header("📊 Status")
@@ -122,99 +179,62 @@ def main():
         st.header("ℹ️ Detection Info")
         info_placeholder = st.empty()
 
-    # Camera capture using st.camera_input
-    camera_frame = st.camera_input("Camera")
+        # Update status display from shared state
+        if not st.session_state.streaming:
+            status_placeholder.markdown(
+                '<div class="status-box safe-status">⏸️ Paused</div>',
+                unsafe_allow_html=True
+            )
+            alert_placeholder.info("Waiting to start...")
+            eyes_placeholder.metric("Eyes Closed Duration", "0.0s")
+            mouth_placeholder.metric("Yawning Duration", "0.0s")
+            info_placeholder.markdown("""
+            - **Frame:** 0
+            - **Eye Status:** N/A
+            - **Mouth Status:** N/A
+            """)
+        else:
+            eye_seconds = shared_state["eye_closed_counter"] / 30.0
+            mouth_seconds = shared_state["mouth_open_counter"] / 30.0
 
-    # Control buttons - placed after camera input for better UX
-    st.markdown("---")
-    col_btn1, col_btn2 = st.columns(2)
-    with col_btn1:
-        if st.button("▶️ Start Detection"):
-            st.session_state.running = True
-            st.rerun()
-    with col_btn2:
-        if st.button("⏹️ Stop Detection"):
-            st.session_state.running = False
-            st.session_state.detector.stop_alert()
-            st.rerun()
+            # Status box
+            if shared_state["drowsy_detected"]:
+                status_placeholder.markdown(
+                    '<div class="status-box alert-status">🚨 DROWSINESS DETECTED!</div>',
+                    unsafe_allow_html=True
+                )
+                alert_placeholder.warning("⚠️ Alert is ACTIVE")
+            elif shared_state["eye_closed_counter"] > 10 or shared_state["mouth_open_counter"] > 5:
+                status_placeholder.markdown(
+                    '<div class="status-box warning-status">⚠️ Warning - Possible Fatigue</div>',
+                    unsafe_allow_html=True
+                )
+                alert_placeholder.info("Monitoring...")
+            else:
+                status_placeholder.markdown(
+                    '<div class="status-box safe-status">✅ Driver is Alert</div>',
+                    unsafe_allow_html=True
+                )
+                alert_placeholder.success("No alert active")
 
-    # Show status based on running state
-    if not st.session_state.running:
-        video_placeholder.info("Click 'Start Detection' to begin monitoring")
-        status_placeholder.markdown(
-            '<div class="status-box safe-status">⏸️ Paused</div>',
-            unsafe_allow_html=True
-        )
-        st.stop()
+            # Metrics
+            eyes_placeholder.metric(
+                "Eyes Closed Duration",
+                f"{eye_seconds:.1f}s",
+                delta=f"Threshold: 2.0s" if shared_state["eye_closed_counter"] > 10 else None
+            )
+            mouth_placeholder.metric(
+                "Yawning Duration",
+                f"{mouth_seconds:.1f}s",
+                delta=f"Threshold: 0.5s" if shared_state["mouth_open_counter"] > 5 else None
+            )
 
-    if camera_frame is None:
-        video_placeholder.warning("📷 Please allow camera access to start detection")
-        st.stop()
-
-    # Read image from camera
-    image = np.array(camera_frame)
-
-    # Convert RGB to BGR for OpenCV
-    frame = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-
-    # Flip frame for mirror effect
-    frame = cv2.flip(frame, 1)
-
-    # Process frame
-    processed_frame, drowsy_detected, eye_counter, mouth_counter = process_frame(
-        frame, st.session_state.detector
-    )
-
-    st.session_state.frame_count += 1
-
-    # Convert BGR to RGB for Streamlit
-    processed_frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-
-    # Display video
-    video_placeholder.image(processed_frame_rgb, width=640)
-
-    # Update status display
-    eye_seconds = eye_counter / 30.0
-    mouth_seconds = mouth_counter / 30.0
-
-    # Status box
-    if drowsy_detected:
-        status_placeholder.markdown(
-            '<div class="status-box alert-status">🚨 DROWSINESS DETECTED!</div>',
-            unsafe_allow_html=True
-        )
-        alert_placeholder.warning("⚠️ Alert is ACTIVE")
-    elif eye_counter > 10 or mouth_counter > 5:
-        status_placeholder.markdown(
-            '<div class="status-box warning-status">⚠️ Warning - Possible Fatigue</div>',
-            unsafe_allow_html=True
-        )
-        alert_placeholder.info("Monitoring...")
-    else:
-        status_placeholder.markdown(
-            '<div class="status-box safe-status">✅ Driver is Alert</div>',
-            unsafe_allow_html=True
-        )
-        alert_placeholder.success("No alert active")
-
-    # Metrics
-    eyes_placeholder.metric(
-        "Eyes Closed Duration",
-        f"{eye_seconds:.1f}s",
-        delta=f"Threshold: 2.0s" if eye_counter > 10 else None
-    )
-    mouth_placeholder.metric(
-        "Yawning Duration",
-        f"{mouth_seconds:.1f}s",
-        delta=f"Threshold: 0.5s" if mouth_counter > 5 else None
-    )
-
-    # Detection info
-    info_placeholder.markdown(f"""
-    - **Frame:** {st.session_state.frame_count}
-    - **Eye Status:** {'Closed' if eye_counter > 0 else 'Open'}
-    - **Mouth Status:** {'Open (Yawning)' if mouth_counter > 0 else 'Closed'}
-    """)
+            # Detection info
+            info_placeholder.markdown(f"""
+            - **Frame:** {shared_state.get('frame_count', 0)}
+            - **Eye Status:** {'Closed' if shared_state['eye_closed_counter'] > 0 else 'Open'}
+            - **Mouth Status:** {'Open (Yawning)' if shared_state['mouth_open_counter'] > 0 else 'Closed'}
+            """)
 
 
 if __name__ == "__main__":
