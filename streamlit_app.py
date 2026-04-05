@@ -106,8 +106,19 @@ class DrowsinessVideoProcessor:
 
 
 def main():
-    # Initialize session state variables
-    get_metrics()
+    # Initialize session state variables FIRST
+    if "eye_closed_counter" not in st.session_state:
+        st.session_state.eye_closed_counter = 0
+    if "mouth_open_counter" not in st.session_state:
+        st.session_state.mouth_open_counter = 0
+    if "drowsy_detected" not in st.session_state:
+        st.session_state.drowsy_detected = False
+    if "alert_active" not in st.session_state:
+        st.session_state.alert_active = False
+    if "frame_count" not in st.session_state:
+        st.session_state.frame_count = 0
+    if "processor" not in st.session_state:
+        st.session_state.processor = DrowsinessVideoProcessor()
 
     # Header
     st.markdown('<p class="main-header">🚨 Drowsiness Detection System</p>', unsafe_allow_html=True)
@@ -132,17 +143,12 @@ def main():
         st.markdown("---")
         # Reset button
         if st.button("🔄 Reset Detector"):
-            if 'processor' in st.session_state:
-                st.session_state.processor.detector.reset()
+            st.session_state.processor.detector.reset()
             st.session_state.eye_closed_counter = 0
             st.session_state.mouth_open_counter = 0
             st.session_state.frame_count = 0
             st.success("Detector reset!")
             st.rerun()
-
-    # Create processor if not exists
-    if 'processor' not in st.session_state:
-        st.session_state.processor = DrowsinessVideoProcessor()
 
     # Main content area
     col1, col2 = st.columns([2, 1])
