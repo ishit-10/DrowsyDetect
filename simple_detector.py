@@ -12,7 +12,7 @@ class SimpleDrowsinessDetector:
         self.eye_closed_counter = 0
         self.eye_closed_threshold = 60  # 2 seconds at 30 FPS
         self.mouth_open_counter = 0
-        self.mouth_open_threshold = 15  # 0.5 seconds at 30 FPS
+        self.mouth_open_threshold = 30  # 1 second at 30 FPS (more strict)
 
         # Alert state
         self.alert_active = False
@@ -25,8 +25,8 @@ class SimpleDrowsinessDetector:
         # Eye aspect ratio threshold - below this means eyes are closed
         self.EYE_AR_THRESH = 0.25
 
-        # Mouth aspect ratio threshold - above this means yawning
-        self.MOUTH_AR_THRESH = 0.7
+        # Mouth aspect ratio threshold - above this means yawning (increased for fewer false positives)
+        self.MOUTH_AR_THRESH = 0.8
 
     def eye_aspect_ratio(self, eye_points):
         """Calculate the eye aspect ratio for eye closure detection"""
@@ -55,8 +55,9 @@ class SimpleDrowsinessDetector:
         """
         Detect yawn by analyzing the mouth region geometry.
         Uses contour analysis on the lower part of the face.
+        More conservative detection to avoid false positives.
         """
-        x, y, w, h = face_rect
+        _, _, w, h = face_rect
 
         # Convert to grayscale if needed
         if len(face_roi.shape) == 3:
@@ -75,11 +76,12 @@ class SimpleDrowsinessDetector:
             11, 2
         )
 
-        # Define mouth region (lower half of face, centered horizontally)
-        mouth_y_start = int(h * 0.5)
+        # Define mouth region (lower third of face, centered horizontally)
+        # Smaller region to focus on actual mouth
+        mouth_y_start = int(h * 0.6)
         mouth_y_end = int(h * 0.85)
-        mouth_x_start = int(w * 0.2)
-        mouth_x_end = int(w * 0.8)
+        mouth_x_start = int(w * 0.25)
+        mouth_x_end = int(w * 0.75)
 
         mouth_thresh = thresh[mouth_y_start:mouth_y_end, mouth_x_start:mouth_x_end]
 
@@ -99,13 +101,13 @@ class SimpleDrowsinessDetector:
 
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area > 200:  # Filter small noise
+            if area > 300:  # Filter small noise (increased from 200)
                 # Get bounding box
                 cnt_x, _, cnt_w, _ = cv2.boundingRect(contour)
                 contour_center = cnt_x + cnt_w // 2
 
                 # Prefer contours near the center
-                if abs(contour_center - center_x) < w * 0.3:
+                if abs(contour_center - center_x) < w * 0.2:  # Tighter center constraint
                     if area > max_area:
                         max_area = area
                         mouth_contour = contour
@@ -121,9 +123,9 @@ class SimpleDrowsinessDetector:
         # Yawning: more square or tall (higher aspect ratio)
         aspect_ratio = mh / max(mw, 1)
 
-        # Yawn threshold: aspect ratio > 0.5 and sufficient area
-        # This means the mouth opening is significantly vertical
-        is_yawning = aspect_ratio > 0.5 and max_area > 800
+        # Stricter yawn threshold: aspect ratio > 0.7 and larger area
+        # This ensures only significant mouth opening is detected as yawn
+        is_yawning = aspect_ratio > 0.7 and max_area > 1500
 
         return is_yawning
 
@@ -158,9 +160,7 @@ class SimpleDrowsinessDetector:
             eyes_detected = len(eyes) > 0
 
             if eyes_detected:
-                # Eyes are visible - check if they're open or closed
-                # For now, if we detect eyes, we assume they're open
-                # (Haarcascade eye detector typically detects open eyes)
+                # Eyes are visible - haarcascade detects open eyes
                 if self.eye_closed_counter > 0:
                     print(f"  Eyes reopened - Was closed for {self.eye_closed_counter} frames")
                 self.eye_closed_counter = 0
@@ -171,8 +171,7 @@ class SimpleDrowsinessDetector:
             else:
                 # Eyes not detected - could be closed OR face at wrong angle
                 # Only increment counter if we previously had eyes detected
-                # This prevents false positives from poor camera angles
-                if eyes_detected or self.eye_closed_counter > 0:
+                if self.eye_closed_counter > 0:
                     self.eye_closed_counter += 1
                     print(f"  Eyes not visible - Counter: {self.eye_closed_counter}")
 
@@ -194,11 +193,11 @@ class SimpleDrowsinessDetector:
             # Only trigger drowsiness if we have enough evidence
             if self.eye_closed_counter >= self.eye_closed_threshold:
                 drowsy_detected = True
-                status_text = f"DROWSY - Eyes closed {eye_closed_seconds:.1f}s!"
+                status_text = "DROWSY"
                 status_color = (0, 0, 255)  # Red
             elif self.mouth_open_counter >= self.mouth_open_threshold:
                 drowsy_detected = True
-                status_text = f"DROWSY - Yawning {mouth_open_seconds:.1f}s!"
+                status_text = "DROWSY"
                 status_color = (0, 0, 255)  # Red
             elif not face_detected:
                 status_text = "No face detected"
@@ -263,7 +262,7 @@ class SimpleDrowsinessDetector:
 
         cv2.putText(frame, f"Eyes Closed: {eye_closed_seconds:.1f}s / 2.0s",
                    (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        cv2.putText(frame, f"Mouth Open: {mouth_open_seconds:.1f}s / 0.5s",
+        cv2.putText(frame, f"Mouth Open: {mouth_open_seconds:.1f}s / 1.0s",
                    (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
         # Draw detection info

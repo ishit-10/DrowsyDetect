@@ -47,24 +47,25 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# Shared state for detector metrics
-@st.cache_resource
-def get_shared_state():
-    return {
-        "eye_closed_counter": 0,
-        "mouth_open_counter": 0,
-        "drowsy_detected": False,
-        "alert_active": False,
-        "frame_count": 0
-    }
+# Use session state directly for shared metrics (not cached)
+def init_shared_state():
+    if "metrics" not in st.session_state:
+        st.session_state.metrics = {
+            "eye_closed_counter": 0,
+            "mouth_open_counter": 0,
+            "drowsy_detected": False,
+            "alert_active": False,
+            "frame_count": 0
+        }
+    return st.session_state.metrics
 
 
 class DrowsinessVideoProcessor:
     """Video processor that runs drowsiness detection on each frame"""
 
-    def __init__(self, shared_state):
+    def __init__(self, metrics):
         self.detector = SimpleDrowsinessDetector()
-        self.shared_state = shared_state
+        self.metrics = metrics
 
     def recv(self, frame):
         """Process incoming video frame"""
@@ -77,12 +78,12 @@ class DrowsinessVideoProcessor:
         # Run drowsiness detection
         processed_frame, drowsy_detected = self.detector.detect_drowsiness(img)
 
-        # Update shared state for UI
-        self.shared_state["eye_closed_counter"] = self.detector.eye_closed_counter
-        self.shared_state["mouth_open_counter"] = self.detector.mouth_open_counter
-        self.shared_state["drowsy_detected"] = drowsy_detected
-        self.shared_state["alert_active"] = self.detector.alert_active
-        self.shared_state["frame_count"] = self.shared_state.get("frame_count", 0) + 1
+        # Update shared metrics for UI
+        self.metrics["eye_closed_counter"] = self.detector.eye_closed_counter
+        self.metrics["mouth_open_counter"] = self.detector.mouth_open_counter
+        self.metrics["drowsy_detected"] = drowsy_detected
+        self.metrics["alert_active"] = self.detector.alert_active
+        self.metrics["frame_count"] = self.metrics.get("frame_count", 0) + 1
 
         # Convert back to RGB for WebRTC
         processed_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
@@ -101,7 +102,7 @@ def main():
         st.header("⚙️ Settings")
         st.markdown("**Detection Thresholds:**")
         st.info("- Eyes closed for 2+ seconds triggers alert")
-        st.info("- Yawning for 0.5+ seconds triggers alert")
+        st.info("- Yawning for 1+ seconds triggers alert")
 
         st.markdown("---")
         st.header("📋 Instructions")
@@ -119,15 +120,18 @@ def main():
         if st.button("🔄 Reset Detector"):
             if 'processor' in st.session_state:
                 st.session_state.processor.detector.reset()
+                st.session_state.metrics["eye_closed_counter"] = 0
+                st.session_state.metrics["mouth_open_counter"] = 0
+                st.session_state.metrics["frame_count"] = 0
                 st.success("Detector reset!")
                 st.rerun()
 
-    # Initialize shared state
-    shared_state = get_shared_state()
+    # Initialize shared metrics
+    metrics = init_shared_state()
 
     # Create processor - it will be used when the WebRTC stream starts
     if 'processor' not in st.session_state:
-        st.session_state.processor = DrowsinessVideoProcessor(shared_state)
+        st.session_state.processor = DrowsinessVideoProcessor(metrics)
 
     # Main content area
     col1, col2 = st.columns([2, 1])
@@ -139,7 +143,7 @@ def main():
             key="drowsy-detection",
             mode=WebRtcMode.SENDRECV,
             media_stream_constraints={"video": True},
-            video_processor_factory=lambda: DrowsinessVideoProcessor(get_shared_state()),
+            video_processor_factory=lambda: DrowsinessVideoProcessor(metrics),
             async_processing=True,
         )
 
@@ -155,18 +159,18 @@ def main():
         st.header("ℹ️ Detection Info")
         info_placeholder = st.empty()
 
-        # Update status display from shared state
-        eye_seconds = shared_state["eye_closed_counter"] / 30.0
-        mouth_seconds = shared_state["mouth_open_counter"] / 30.0
+        # Update status display from shared metrics
+        eye_seconds = metrics["eye_closed_counter"] / 30.0
+        mouth_seconds = metrics["mouth_open_counter"] / 30.0
 
         # Status box
-        if shared_state["drowsy_detected"]:
+        if metrics["drowsy_detected"]:
             status_placeholder.markdown(
                 '<div class="status-box alert-status">🚨 DROWSINESS DETECTED!</div>',
                 unsafe_allow_html=True
             )
-            alert_placeholder.warning("⚠️ Visual alert is ACTIVE - Position face properly and blink eyes")
-        elif shared_state["eye_closed_counter"] > 10 or shared_state["mouth_open_counter"] > 5:
+            alert_placeholder.warning("⚠️ Visual alert is ACTIVE")
+        elif metrics["eye_closed_counter"] > 10 or metrics["mouth_open_counter"] > 5:
             status_placeholder.markdown(
                 '<div class="status-box warning-status">⚠️ Warning - Possible Fatigue</div>',
                 unsafe_allow_html=True
@@ -183,19 +187,19 @@ def main():
         eyes_placeholder.metric(
             "Eyes Closed Duration",
             f"{eye_seconds:.1f}s",
-            delta=f"Threshold: 2.0s" if shared_state["eye_closed_counter"] > 10 else None
+            delta=f"Threshold: 2.0s" if metrics["eye_closed_counter"] > 10 else None
         )
         mouth_placeholder.metric(
             "Yawning Duration",
             f"{mouth_seconds:.1f}s",
-            delta=f"Threshold: 0.5s" if shared_state["mouth_open_counter"] > 5 else None
+            delta=f"Threshold: 1.0s" if metrics["mouth_open_counter"] > 5 else None
         )
 
         # Detection info
         info_placeholder.markdown(f"""
-        - **Frame:** {shared_state.get('frame_count', 0)}
-        - **Eye Status:** {'Closed' if shared_state['eye_closed_counter'] > 0 else 'Open'}
-        - **Mouth Status:** {'Open (Yawning)' if shared_state['mouth_open_counter'] > 0 else 'Closed'}
+        - **Frame:** {metrics.get('frame_count', 0)}
+        - **Eye Status:** {'Closed' if metrics['eye_closed_counter'] > 0 else 'Open'}
+        - **Mouth Status:** {'Open' if metrics['mouth_open_counter'] > 0 else 'Closed'}
         """)
 
 
