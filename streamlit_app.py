@@ -1,6 +1,5 @@
 import streamlit as st
 import cv2
-import numpy as np
 import av
 from simple_detector import SimpleDrowsinessDetector
 from streamlit_webrtc import WebRtcMode, webrtc_streamer
@@ -126,46 +125,23 @@ def main():
     # Initialize shared state
     shared_state = get_shared_state()
 
-    # Initialize processor
+    # Create processor - it will be used when the WebRTC stream starts
     if 'processor' not in st.session_state:
-        st.session_state.processor = None
-
-    if 'streaming' not in st.session_state:
-        st.session_state.streaming = False
-
-    # Control buttons
-    col_btn1, col_btn2 = st.columns(2)
-    with col_btn1:
-        if st.button("▶️ Start Detection"):
-            st.session_state.streaming = True
-            st.session_state.processor = DrowsinessVideoProcessor(shared_state)
-            st.rerun()
-    with col_btn2:
-        if st.button("⏹️ Stop Detection"):
-            st.session_state.streaming = False
-            if st.session_state.processor:
-                st.session_state.processor.detector.stop_alert()
-            st.rerun()
+        st.session_state.processor = DrowsinessVideoProcessor(shared_state)
 
     # Main content area
     col1, col2 = st.columns([2, 1])
 
     with col1:
         st.header("📹 Live Feed")
-
-        if not st.session_state.streaming:
-            st.info("Click 'Start Detection' to begin monitoring")
-            video_placeholder = st.empty()
-            video_placeholder.image(np.zeros((480, 640, 3), dtype=np.uint8), width=640)
-        else:
-            # WebRTC streamer with video processor
-            webrtc_streamer(
-                key="drowsy-detection",
-                mode=WebRtcMode.SENDRECV,
-                media_stream_constraints={"video": True},
-                video_processor_factory=lambda: st.session_state.processor,
-                async_processing=True,
-            )
+        # WebRTC streamer with video processor - starts automatically when user allows camera
+        webrtc_streamer(
+            key="drowsy-detection",
+            mode=WebRtcMode.SENDRECV,
+            media_stream_constraints={"video": True},
+            video_processor_factory=lambda: DrowsinessVideoProcessor(get_shared_state()),
+            async_processing=True,
+        )
 
     with col2:
         st.header("📊 Status")
@@ -180,61 +156,47 @@ def main():
         info_placeholder = st.empty()
 
         # Update status display from shared state
-        if not st.session_state.streaming:
+        eye_seconds = shared_state["eye_closed_counter"] / 30.0
+        mouth_seconds = shared_state["mouth_open_counter"] / 30.0
+
+        # Status box
+        if shared_state["drowsy_detected"]:
             status_placeholder.markdown(
-                '<div class="status-box safe-status">⏸️ Paused</div>',
+                '<div class="status-box alert-status">🚨 DROWSINESS DETECTED!</div>',
                 unsafe_allow_html=True
             )
-            alert_placeholder.info("Waiting to start...")
-            eyes_placeholder.metric("Eyes Closed Duration", "0.0s")
-            mouth_placeholder.metric("Yawning Duration", "0.0s")
-            info_placeholder.markdown("""
-            - **Frame:** 0
-            - **Eye Status:** N/A
-            - **Mouth Status:** N/A
-            """)
+            alert_placeholder.warning("⚠️ Alert is ACTIVE")
+        elif shared_state["eye_closed_counter"] > 10 or shared_state["mouth_open_counter"] > 5:
+            status_placeholder.markdown(
+                '<div class="status-box warning-status">⚠️ Warning - Possible Fatigue</div>',
+                unsafe_allow_html=True
+            )
+            alert_placeholder.info("Monitoring...")
         else:
-            eye_seconds = shared_state["eye_closed_counter"] / 30.0
-            mouth_seconds = shared_state["mouth_open_counter"] / 30.0
-
-            # Status box
-            if shared_state["drowsy_detected"]:
-                status_placeholder.markdown(
-                    '<div class="status-box alert-status">🚨 DROWSINESS DETECTED!</div>',
-                    unsafe_allow_html=True
-                )
-                alert_placeholder.warning("⚠️ Alert is ACTIVE")
-            elif shared_state["eye_closed_counter"] > 10 or shared_state["mouth_open_counter"] > 5:
-                status_placeholder.markdown(
-                    '<div class="status-box warning-status">⚠️ Warning - Possible Fatigue</div>',
-                    unsafe_allow_html=True
-                )
-                alert_placeholder.info("Monitoring...")
-            else:
-                status_placeholder.markdown(
-                    '<div class="status-box safe-status">✅ Driver is Alert</div>',
-                    unsafe_allow_html=True
-                )
-                alert_placeholder.success("No alert active")
-
-            # Metrics
-            eyes_placeholder.metric(
-                "Eyes Closed Duration",
-                f"{eye_seconds:.1f}s",
-                delta=f"Threshold: 2.0s" if shared_state["eye_closed_counter"] > 10 else None
+            status_placeholder.markdown(
+                '<div class="status-box safe-status">✅ Driver is Alert</div>',
+                unsafe_allow_html=True
             )
-            mouth_placeholder.metric(
-                "Yawning Duration",
-                f"{mouth_seconds:.1f}s",
-                delta=f"Threshold: 0.5s" if shared_state["mouth_open_counter"] > 5 else None
-            )
+            alert_placeholder.success("No alert active")
 
-            # Detection info
-            info_placeholder.markdown(f"""
-            - **Frame:** {shared_state.get('frame_count', 0)}
-            - **Eye Status:** {'Closed' if shared_state['eye_closed_counter'] > 0 else 'Open'}
-            - **Mouth Status:** {'Open (Yawning)' if shared_state['mouth_open_counter'] > 0 else 'Closed'}
-            """)
+        # Metrics
+        eyes_placeholder.metric(
+            "Eyes Closed Duration",
+            f"{eye_seconds:.1f}s",
+            delta=f"Threshold: 2.0s" if shared_state["eye_closed_counter"] > 10 else None
+        )
+        mouth_placeholder.metric(
+            "Yawning Duration",
+            f"{mouth_seconds:.1f}s",
+            delta=f"Threshold: 0.5s" if shared_state["mouth_open_counter"] > 5 else None
+        )
+
+        # Detection info
+        info_placeholder.markdown(f"""
+        - **Frame:** {shared_state.get('frame_count', 0)}
+        - **Eye Status:** {'Closed' if shared_state['eye_closed_counter'] > 0 else 'Open'}
+        - **Mouth Status:** {'Open (Yawning)' if shared_state['mouth_open_counter'] > 0 else 'Closed'}
+        """)
 
 
 if __name__ == "__main__":
