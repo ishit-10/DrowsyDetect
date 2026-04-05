@@ -111,7 +111,7 @@ def main():
         3. The system will detect:
            - Eye closure (drowsiness)
            - Yawning (fatigue)
-        4. Alert will sound when drowsiness detected
+        4. Visual alert appears when drowsiness detected
         """)
 
         st.markdown("---")
@@ -165,7 +165,7 @@ def main():
                 '<div class="status-box alert-status">🚨 DROWSINESS DETECTED!</div>',
                 unsafe_allow_html=True
             )
-            alert_placeholder.warning("⚠️ Alert is ACTIVE")
+            alert_placeholder.warning("⚠️ Visual alert is ACTIVE - Position face properly and blink eyes")
         elif shared_state["eye_closed_counter"] > 10 or shared_state["mouth_open_counter"] > 5:
             status_placeholder.markdown(
                 '<div class="status-box warning-status">⚠️ Warning - Possible Fatigue</div>',
