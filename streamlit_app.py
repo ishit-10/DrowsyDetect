@@ -4,6 +4,23 @@ import av
 from simple_detector import SimpleDrowsinessDetector
 from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
+# Global processor instance (persists across reruns)
+_processor_instance = None
+
+def get_processor():
+    """Get or create the global processor instance"""
+    global _processor_instance
+    if _processor_instance is None:
+        _processor_instance = DrowsinessVideoProcessor()
+    return _processor_instance
+
+def reset_processor():
+    """Reset the global processor instance"""
+    global _processor_instance
+    if _processor_instance is not None:
+        _processor_instance.detector.reset()
+    _processor_instance = DrowsinessVideoProcessor()
+
 # Page configuration
 st.set_page_config(
     page_title="Drowsiness Detection System",
@@ -60,14 +77,6 @@ def get_metrics():
     if "frame_count" not in st.session_state:
         st.session_state.frame_count = 0
 
-    return {
-        "eye_closed_counter": st.session_state.eye_closed_counter,
-        "mouth_open_counter": st.session_state.mouth_open_counter,
-        "drowsy_detected": st.session_state.drowsy_detected,
-        "alert_active": st.session_state.alert_active,
-        "frame_count": st.session_state.frame_count
-    }
-
 
 def update_metrics(detector, drowsy_detected):
     """Update session state from detector"""
@@ -106,19 +115,8 @@ class DrowsinessVideoProcessor:
 
 
 def main():
-    # Initialize session state variables FIRST
-    if "eye_closed_counter" not in st.session_state:
-        st.session_state.eye_closed_counter = 0
-    if "mouth_open_counter" not in st.session_state:
-        st.session_state.mouth_open_counter = 0
-    if "drowsy_detected" not in st.session_state:
-        st.session_state.drowsy_detected = False
-    if "alert_active" not in st.session_state:
-        st.session_state.alert_active = False
-    if "frame_count" not in st.session_state:
-        st.session_state.frame_count = 0
-    if "processor" not in st.session_state:
-        st.session_state.processor = DrowsinessVideoProcessor()
+    # Initialize session state variables
+    get_metrics()
 
     # Header
     st.markdown('<p class="main-header">🚨 Drowsiness Detection System</p>', unsafe_allow_html=True)
@@ -143,7 +141,7 @@ def main():
         st.markdown("---")
         # Reset button
         if st.button("🔄 Reset Detector"):
-            st.session_state.processor.detector.reset()
+            reset_processor()
             st.session_state.eye_closed_counter = 0
             st.session_state.mouth_open_counter = 0
             st.session_state.frame_count = 0
@@ -155,12 +153,12 @@ def main():
 
     with col1:
         st.header("📹 Live Feed")
-        # WebRTC streamer with video processor - use session state processor to maintain state
+        # WebRTC streamer with video processor - use global instance
         webrtc_streamer(
             key="drowsy-detection",
             mode=WebRtcMode.SENDRECV,
             media_stream_constraints={"video": True},
-            video_processor_factory=lambda: st.session_state.processor,
+            video_processor_factory=get_processor,
             async_processing=True,
         )
 
