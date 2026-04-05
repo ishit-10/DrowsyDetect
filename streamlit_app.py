@@ -149,12 +149,12 @@ def main():
 
     with col1:
         st.header("📹 Live Feed")
-        # WebRTC streamer with video processor
+        # WebRTC streamer with video processor - use session state processor to maintain state
         webrtc_streamer(
             key="drowsy-detection",
             mode=WebRtcMode.SENDRECV,
             media_stream_constraints={"video": True},
-            video_processor_factory=lambda: DrowsinessVideoProcessor(),
+            video_processor_factory=lambda: st.session_state.processor,
             async_processing=True,
         )
 
