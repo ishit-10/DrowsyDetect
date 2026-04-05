@@ -106,6 +106,9 @@ class DrowsinessVideoProcessor:
 
 
 def main():
+    # Initialize session state variables
+    get_metrics()
+
     # Header
     st.markdown('<p class="main-header">🚨 Drowsiness Detection System</p>', unsafe_allow_html=True)
     st.markdown("---")
