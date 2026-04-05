@@ -1,25 +1,8 @@
 import streamlit as st
 import cv2
-import av
+import numpy as np
 from simple_detector import SimpleDrowsinessDetector
-from streamlit_webrtc import WebRtcMode, webrtc_streamer
-
-# Global processor instance (persists across reruns)
-_processor_instance = None
-
-def get_processor():
-    """Get or create the global processor instance"""
-    global _processor_instance
-    if _processor_instance is None:
-        _processor_instance = DrowsinessVideoProcessor()
-    return _processor_instance
-
-def reset_processor():
-    """Reset the global processor instance"""
-    global _processor_instance
-    if _processor_instance is not None:
-        _processor_instance.detector.reset()
-    _processor_instance = DrowsinessVideoProcessor()
+import time
 
 # Page configuration
 st.set_page_config(
@@ -64,8 +47,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def get_metrics():
-    """Get or initialize metrics in session state"""
+def init_session_state():
+    """Initialize all session state variables"""
+    if "running" not in st.session_state:
+        st.session_state.running = False
     if "eye_closed_counter" not in st.session_state:
         st.session_state.eye_closed_counter = 0
     if "mouth_open_counter" not in st.session_state:
@@ -76,47 +61,38 @@ def get_metrics():
         st.session_state.alert_active = False
     if "frame_count" not in st.session_state:
         st.session_state.frame_count = 0
+    if "last_frame_time" not in st.session_state:
+        st.session_state.last_frame_time = None
+    if "detector" not in st.session_state:
+        st.session_state.detector = SimpleDrowsinessDetector()
 
 
-def update_metrics(detector, drowsy_detected):
-    """Update session state from detector"""
+def process_frame(img):
+    """Process a single frame through the detector"""
+    detector = st.session_state.detector
+
+    # Flip frame for mirror effect
+    img = cv2.flip(img, 1)
+
+    # Run drowsiness detection
+    processed_frame, drowsy_detected = detector.detect_drowsiness(img)
+
+    # Update session state
     st.session_state.eye_closed_counter = detector.eye_closed_counter
     st.session_state.mouth_open_counter = detector.mouth_open_counter
     st.session_state.drowsy_detected = drowsy_detected
     st.session_state.alert_active = detector.alert_active
-    st.session_state.frame_count = st.session_state.frame_count + 1
+    st.session_state.frame_count += 1
 
+    # Convert BGR to RGB for Streamlit
+    processed_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
 
-class DrowsinessVideoProcessor:
-    """Video processor that runs drowsiness detection on each frame"""
-
-    def __init__(self):
-        self.detector = SimpleDrowsinessDetector()
-
-    def recv(self, frame):
-        """Process incoming video frame"""
-        # Convert AVFrame to numpy array
-        img = frame.to_ndarray(format="bgr24")
-
-        # Flip frame for mirror effect
-        img = cv2.flip(img, 1)
-
-        # Run drowsiness detection
-        processed_frame, drowsy_detected = self.detector.detect_drowsiness(img)
-
-        # Update session state for UI
-        update_metrics(self.detector, drowsy_detected)
-
-        # Convert back to RGB for WebRTC
-        processed_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-
-        # Convert numpy array back to AVFrame
-        return av.VideoFrame.from_ndarray(processed_rgb, format="rgb24")
+    return processed_rgb
 
 
 def main():
-    # Initialize session state variables
-    get_metrics()
+    # Initialize session state
+    init_session_state()
 
     # Header
     st.markdown('<p class="main-header">🚨 Drowsiness Detection System</p>', unsafe_allow_html=True)
@@ -132,16 +108,32 @@ def main():
         st.markdown("---")
         st.header("📋 Instructions")
         st.markdown("""
-        1. Allow camera access when prompted
-        2. Position your face clearly in front of camera
-        3. Keep eyes visible for accurate detection
-        4. Visual alert appears when drowsiness detected
+        1. Click 'Start Detection' to begin
+        2. Allow camera access when prompted
+        3. Position your face clearly in front of camera
+        4. Keep eyes visible for accurate detection
+        5. Visual alert appears when drowsiness detected
         """)
 
         st.markdown("---")
+
+        # Start/Stop buttons
+        if not st.session_state.running:
+            if st.button("▶️ Start Detection", type="primary"):
+                st.session_state.running = True
+                st.session_state.detector = SimpleDrowsinessDetector()
+                st.rerun()
+        else:
+            if st.button("⏹️ Stop Detection", type="secondary"):
+                st.session_state.running = False
+                st.session_state.detector.stop_alert()
+                st.rerun()
+
+        st.markdown("---")
+
         # Reset button
         if st.button("🔄 Reset Detector"):
-            reset_processor()
+            st.session_state.detector.reset()
             st.session_state.eye_closed_counter = 0
             st.session_state.mouth_open_counter = 0
             st.session_state.frame_count = 0
@@ -153,14 +145,25 @@ def main():
 
     with col1:
         st.header("📹 Live Feed")
-        # WebRTC streamer with video processor - use global instance
-        webrtc_streamer(
-            key="drowsy-detection",
-            mode=WebRtcMode.SENDRECV,
-            media_stream_constraints={"video": True},
-            video_processor_factory=get_processor,
-            async_processing=True,
-        )
+
+        if not st.session_state.running:
+            st.info("Click 'Start Detection' to begin monitoring")
+            st.image(np.zeros((480, 640, 3), dtype=np.uint8), caption="Camera off", use_container_width=True)
+        else:
+            # Use st.camera_input for live feed
+            # Note: This captures frames when user interacts or we can use session state tricks
+            cam_frame = st.camera_input("Camera", key="camera_feed")
+
+            if cam_frame is not None:
+                # Read the frame
+                img = np.array(cam_frame)
+                processed = process_frame(img)
+                st.image(processed, use_container_width=True)
+
+                # Auto-refresh for continuous feed
+                st.rerun()
+            else:
+                st.info("Waiting for camera...")
 
     with col2:
         st.header("📊 Status")
