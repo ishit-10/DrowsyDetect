@@ -63,7 +63,7 @@ def main():
         elif key == ord('r'):
             detector.reset()
     
-    # Cleanup
+
     cap.release()
     cv2.destroyAllWindows()
     detector.stop_alert()
